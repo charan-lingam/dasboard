@@ -366,8 +366,8 @@ button { cursor: pointer; border: none; background: none; color: inherit; }
 
 /* ═══════════════════════ MODALS ═══════════════════════ */
 .modal-overlay {
-  position: fixed; inset: 0; z-index: 100;
-  background: rgba(0,0,0,.6); backdrop-filter: blur(6px);
+  position: fixed; inset: 0; z-index: 500;
+  background: rgba(0,0,0,.7); backdrop-filter: blur(6px);
   display: flex; align-items: center; justify-content: center;
   animation: fadeIn .2s ease;
 }

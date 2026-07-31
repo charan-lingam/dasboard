@@ -579,6 +579,7 @@ $('#subtask-input').addEventListener('keydown', (e) => {
 // ─── Project Modal ────────────────────────────────────────────
 let selectedProjectColor = '#6C5CE7';
 $('#add-project-btn').addEventListener('click', () => {
+  closeSidebarMobile();
   $('#project-name').value = '';
   selectedProjectColor = '#6C5CE7';
   $$('.color-swatch').forEach(s => s.classList.toggle('active', s.dataset.color === selectedProjectColor));
@@ -611,6 +612,7 @@ $('#project-form').addEventListener('submit', (e) => {
 let selectedTeamColor = '#6C5CE7';
 
 function openCreateTeam() {
+  closeSidebarMobile();
   editingTeamId = null;
   $('#team-name').value = '';
   selectedTeamColor = '#6C5CE7';
@@ -622,6 +624,7 @@ function openCreateTeam() {
 }
 
 function openEditTeam(teamId) {
+  closeSidebarMobile();
   const team = store.teams.find(t => t.id === teamId);
   if (!team) return;
   editingTeamId = teamId;
