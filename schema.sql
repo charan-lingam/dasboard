@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   status TEXT NOT NULL DEFAULT 'todo',
   priority TEXT NOT NULL DEFAULT 'medium',
   team_id TEXT REFERENCES teams(id) ON DELETE SET NULL,
+  team_ids JSONB DEFAULT '[]'::jsonb,
   project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
   due_date TEXT,
   tags JSONB DEFAULT '[]'::jsonb,

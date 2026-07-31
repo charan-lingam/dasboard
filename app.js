@@ -1,7 +1,7 @@
 /* ═══════════════════════════════════════════════════════════════
    TaskForge — Universal Task Dashboard
    Pure JS, Real-Time Supabase Cloud DB + localStorage caching,
-   Drag-and-drop Kanban, Team Assignments, Multi-user Real-Time Sync.
+   Drag-and-drop Kanban, Multi-Team Assignments, Multi-user Sync.
    ═══════════════════════════════════════════════════════════════ */
 
 // ─── Supabase Configuration ───────────────────────────────────
@@ -25,10 +25,22 @@ const DEFAULT_DATA = {
   nextTaskNum: 1,
 };
 
+function sanitizeTasks(tasks) {
+  return tasks.map(t => {
+    let teamIds = t.teamIds || [];
+    if (!teamIds.length && t.teamId) teamIds = [t.teamId];
+    return { ...t, teamIds };
+  });
+}
+
 function loadLocalData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const data = JSON.parse(raw);
+      data.tasks = sanitizeTasks(data.tasks || []);
+      return data;
+    }
   } catch (_) {}
   return structuredClone(DEFAULT_DATA);
 }
@@ -53,21 +65,25 @@ async function fetchCloudData() {
       if (teamRes.data.length > 0) store.teams = teamRes.data.map(t => ({ id: t.id, name: t.name, color: t.color }));
     }
     if (!taskRes.error && taskRes.data) {
-      store.tasks = taskRes.data.map(t => ({
-        id: t.id,
-        num: t.num,
-        title: t.title,
-        description: t.description,
-        status: t.status,
-        priority: t.priority,
-        teamId: t.team_id,
-        projectId: t.project_id,
-        dueDate: t.due_date,
-        tags: t.tags || [],
-        subtasks: t.subtasks || [],
-        createdAt: t.created_at,
-        updatedAt: t.updated_at
-      }));
+      store.tasks = taskRes.data.map(t => {
+        let teamIds = t.team_ids || [];
+        if (!teamIds.length && t.team_id) teamIds = [t.team_id];
+        return {
+          id: t.id,
+          num: t.num,
+          title: t.title,
+          description: t.description,
+          status: t.status,
+          priority: t.priority,
+          teamIds: teamIds,
+          projectId: t.project_id,
+          dueDate: t.due_date,
+          tags: t.tags || [],
+          subtasks: t.subtasks || [],
+          createdAt: t.created_at,
+          updatedAt: t.updated_at
+        };
+      });
       const maxNum = store.tasks.reduce((m, t) => Math.max(m, t.num || 0), 0);
       store.nextTaskNum = Math.max(store.nextTaskNum, maxNum + 1);
     }
@@ -88,7 +104,8 @@ async function syncTaskToCloud(task) {
     description: task.description,
     status: task.status,
     priority: task.priority,
-    team_id: task.teamId,
+    team_id: task.teamIds?.[0] || null,
+    team_ids: task.teamIds || [],
     project_id: task.projectId,
     due_date: task.dueDate,
     tags: task.tags || [],
@@ -118,7 +135,6 @@ async function deleteTeamFromCloud(id) {
   await supabaseClient.from('teams').delete().eq('id', id);
 }
 
-// Enable Real-time Multi-User Subscriptions
 function setupRealtimeSubscriptions() {
   if (!supabaseClient) return;
   supabaseClient
@@ -205,7 +221,7 @@ function getFilteredTasks() {
   const prio = $('#filter-priority').value;
   if (prio) tasks = tasks.filter(t => t.priority === prio);
   const teamFilter = $('#filter-team').value;
-  if (teamFilter) tasks = tasks.filter(t => t.teamId === teamFilter);
+  if (teamFilter) tasks = tasks.filter(t => (t.teamIds || []).includes(teamFilter));
   const q = $('#search-input').value.trim().toLowerCase();
   if (q) tasks = tasks.filter(t =>
     t.title.toLowerCase().includes(q) ||
@@ -287,26 +303,50 @@ function renderTeams() {
     });
   }
 
-  const selects = [$('#task-team'), $('#filter-team')];
-  selects.forEach(sel => {
-    const val = sel.value;
-    const isFilter = sel.id === 'filter-team';
-    sel.innerHTML = `<option value="">${isFilter ? 'All Teams' : 'No Team'}</option>` +
+  // Filter Team Select Dropdown
+  const filterSel = $('#filter-team');
+  if (filterSel) {
+    const val = filterSel.value;
+    filterSel.innerHTML = '<option value="">All Teams</option>' +
       store.teams.map(t => `<option value="${t.id}">${escHtml(t.name)}</option>`).join('');
-    sel.value = val;
-  });
+    filterSel.value = val;
+  }
+}
+
+function renderTeamCheckboxes(selectedIds = []) {
+  const container = $('#task-teams-container');
+  if (!container) return;
+  if (!store.teams.length) {
+    container.innerHTML = '<span style="color:var(--text-muted);font-size:.8rem">No teams created yet</span>';
+    return;
+  }
+  container.innerHTML = store.teams.map(t => {
+    const isChecked = selectedIds.includes(t.id);
+    return `<label class="team-checkbox-item">
+      <input type="checkbox" value="${t.id}" ${isChecked ? 'checked' : ''} />
+      <span class="team-checkbox-badge" style="background:${t.color}">${escHtml(t.name)}</span>
+    </label>`;
+  }).join('');
+}
+
+function getSelectedTeamIds() {
+  const container = $('#task-teams-container');
+  if (!container) return [];
+  return [...container.querySelectorAll('input[type="checkbox"]:checked')].map(cb => cb.value);
 }
 
 function deleteTeam(teamId) {
   const team = store.teams.find(t => t.id === teamId);
   if (!team) return;
-  const tasksUsing = store.tasks.filter(t => t.teamId === teamId).length;
+  const tasksUsing = store.tasks.filter(t => (t.teamIds || []).includes(teamId)).length;
   const msg = tasksUsing
-    ? `Delete "${team.name}"? ${tasksUsing} task(s) will be unassigned.`
+    ? `Delete "${team.name}"? ${tasksUsing} task(s) will be unassigned from this team.`
     : `Delete "${team.name}"?`;
   if (!confirm(msg)) return;
   store.teams = store.teams.filter(t => t.id !== teamId);
-  store.tasks.forEach(t => { if (t.teamId === teamId) t.teamId = null; });
+  store.tasks.forEach(t => {
+    if (t.teamIds) t.teamIds = t.teamIds.filter(id => id !== teamId);
+  });
   saveLocalData();
   deleteTeamFromCloud(teamId);
   renderTeams();
@@ -342,7 +382,8 @@ function renderBoard() {
 }
 
 function cardHtml(t) {
-  const team = store.teams.find(tm => tm.id === t.teamId);
+  const teamIds = t.teamIds || [];
+  const assignedTeams = teamIds.map(id => store.teams.find(tm => tm.id === id)).filter(Boolean);
   const totalSub = (t.subtasks || []).length;
   const doneSub = (t.subtasks || []).filter(s => s.done).length;
   const pct = totalSub ? Math.round((doneSub / totalSub) * 100) : 0;
@@ -353,7 +394,7 @@ function cardHtml(t) {
     <div class="task-card-meta">
       <span class="priority-badge ${t.priority}">${t.priority}</span>
       ${t.dueDate ? `<span class="task-card-due ${isOverdue(t.dueDate) && t.status !== 'done' ? 'overdue' : ''}">📅 ${fmtDate(t.dueDate)}</span>` : ''}
-      ${team ? `<span class="task-card-team" style="background:${team.color}">${escHtml(team.name)}</span>` : ''}
+      ${assignedTeams.length ? `<div class="task-card-teams">${assignedTeams.map(tm => `<span class="task-card-team" style="background:${tm.color}">${escHtml(tm.name)}</span>`).join('')}</div>` : ''}
     </div>
     ${(t.tags || []).length ? `<div class="task-card-tags">${t.tags.map(tag => `<span class="tag">${escHtml(tag)}</span>`).join('')}</div>` : ''}
     ${totalSub ? `<div class="subtask-progress"><div class="subtask-progress-fill" style="width:${pct}%"></div></div>` : ''}
@@ -400,14 +441,15 @@ function renderList() {
   const tasks = getFilteredTasks();
   const tbody = $('#list-tbody');
   tbody.innerHTML = tasks.map(t => {
-    const team = store.teams.find(tm => tm.id === t.teamId);
+    const teamIds = t.teamIds || [];
+    const assignedTeams = teamIds.map(id => store.teams.find(tm => tm.id === id)).filter(Boolean);
     const proj = store.projects.find(p => p.id === t.projectId);
     return `<tr data-id="${t.id}">
       <td class="col-id">TF-${String(t.num).padStart(3, '0')}</td>
       <td>${escHtml(t.title)}</td>
       <td><span class="status-pill ${t.status}">${t.status.replace('-', ' ')}</span></td>
       <td><span class="priority-badge ${t.priority}">${t.priority}</span></td>
-      <td>${team ? `<span class="team-badge" style="background:${team.color}">${escHtml(team.name)}</span>` : '<span style="color:var(--text-muted)">—</span>'}</td>
+      <td>${assignedTeams.length ? assignedTeams.map(tm => `<span class="team-badge" style="background:${tm.color}">${escHtml(tm.name)}</span>`).join(' ') : '<span style="color:var(--text-muted)">—</span>'}</td>
       <td class="${isOverdue(t.dueDate) && t.status !== 'done' ? 'overdue' : ''}" style="${isOverdue(t.dueDate) && t.status !== 'done' ? 'color:var(--red)' : 'color:var(--text-muted)'}">${fmtDate(t.dueDate) || '—'}</td>
       <td>${proj ? `<span style="color:${proj.color}">${escHtml(proj.name)}</span>` : '<span style="color:var(--text-muted)">—</span>'}</td>
     </tr>`;
@@ -428,7 +470,8 @@ function renderTimeline() {
     return;
   }
   container.innerHTML = '<div class="timeline-line"></div>' + tasks.map(t => {
-    const team = store.teams.find(tm => tm.id === t.teamId);
+    const teamIds = t.teamIds || [];
+    const assignedTeams = teamIds.map(id => store.teams.find(tm => tm.id === id)).filter(Boolean);
     return `<div class="timeline-item" data-id="${t.id}">
       <div class="timeline-dot"></div>
       <div class="timeline-card">
@@ -437,7 +480,7 @@ function renderTimeline() {
         <div class="timeline-card-meta">
           <span class="priority-badge ${t.priority}">${t.priority}</span>
           <span class="status-pill ${t.status}">${t.status.replace('-', ' ')}</span>
-          ${team ? `<span class="team-badge" style="background:${team.color}">${escHtml(team.name)}</span>` : ''}
+          ${assignedTeams.length ? assignedTeams.map(tm => `<span class="team-badge" style="background:${tm.color}">${escHtml(tm.name)}</span>`).join(' ') : ''}
         </div>
       </div>
     </div>`;
@@ -466,6 +509,7 @@ function openNewTask() {
   $('#task-form').reset();
   $('#task-status').value = 'todo';
   $('#task-priority').value = 'medium';
+  renderTeamCheckboxes([]);
   renderSubtasksInModal();
   $('#task-modal').hidden = false;
 }
@@ -482,7 +526,7 @@ function openEditTask(id) {
   $('#task-desc').value = task.description || '';
   $('#task-status').value = task.status;
   $('#task-priority').value = task.priority;
-  $('#task-team').value = task.teamId || '';
+  renderTeamCheckboxes(task.teamIds || []);
   $('#task-project').value = task.projectId || '';
   $('#task-due').value = task.dueDate || '';
   $('#task-tags').value = (task.tags || []).join(', ');
@@ -504,7 +548,7 @@ $('#task-form').addEventListener('submit', (e) => {
     description: $('#task-desc').value.trim(),
     status: $('#task-status').value,
     priority: $('#task-priority').value,
-    teamId: $('#task-team').value || null,
+    teamIds: getSelectedTeamIds(),
     projectId: $('#task-project').value || null,
     dueDate: $('#task-due').value || null,
     tags: $('#task-tags').value.split(',').map(s => s.trim()).filter(Boolean),
@@ -701,9 +745,9 @@ $('#import-file').addEventListener('change', (e) => {
       const data = JSON.parse(reader.result);
       if (data.tasks && data.projects && data.teams) {
         store = data;
+        store.tasks = sanitizeTasks(store.tasks);
         saveLocalData();
         renderAll();
-        // Sync all imported data to cloud
         store.projects.forEach(p => syncProjectToCloud(p));
         store.teams.forEach(t => syncTeamToCloud(t));
         store.tasks.forEach(t => syncTaskToCloud(t));
