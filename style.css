@@ -61,10 +61,17 @@ button { cursor: pointer; border: none; background: none; color: inherit; }
   flex-direction: column;
   height: 100vh;
   position: relative;
-  z-index: 20;
+  z-index: 100;
   transition: transform var(--transition), opacity var(--transition);
 }
-.sidebar.collapsed { transform: translateX(-100%); opacity: 0; position: absolute; }
+.sidebar.collapsed { display: none; }
+
+.sidebar-overlay {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(0,0,0,.6); backdrop-filter: blur(4px);
+  animation: fadeIn .2s ease;
+}
+.sidebar-overlay[hidden] { display: none; }
 .sidebar-brand {
   display: flex; align-items: center; gap: 10px;
   padding: 18px 20px; border-bottom: 1px solid var(--border);
@@ -452,9 +459,11 @@ button { cursor: pointer; border: none; background: none; color: inherit; }
   .sidebar {
     position: fixed; left: 0; top: 0; bottom: 0;
     z-index: 150; box-shadow: var(--shadow-lg);
-    transform: translateX(-100%);
+    transform: translateX(-100%); opacity: 0; display: flex;
+    transition: transform var(--transition), opacity var(--transition);
   }
-  .sidebar:not(.collapsed) { transform: translateX(0); opacity: 1; }
+  .sidebar.open { transform: translateX(0); opacity: 1; }
+  .sidebar.collapsed { transform: translateX(-100%); opacity: 0; display: flex; }
 
   /* Topbar Layout */
   .topbar {

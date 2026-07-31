@@ -158,13 +158,32 @@ let editingSubtasks = [];
 let draggedCard = null;
 let editingTeamId = null;
 
-// ─── DOM Refs ─────────────────────────────────────────────────
+// ─── DOM Refs & Sidebar Toggle ─────────────────────────────────
 const sidebar = $('#sidebar');
+const sidebarOverlay = $('#sidebar-overlay');
 
-// ─── Sidebar Toggle ───────────────────────────────────────────
-$('#sidebar-toggle').addEventListener('click', () => {
-  sidebar.classList.toggle('collapsed');
-});
+function toggleSidebar() {
+  const isMobile = window.innerWidth <= 768;
+  if (isMobile) {
+    const isOpen = sidebar.classList.toggle('open');
+    if (sidebarOverlay) sidebarOverlay.hidden = !isOpen;
+  } else {
+    sidebar.classList.toggle('collapsed');
+    if (sidebarOverlay) sidebarOverlay.hidden = true;
+  }
+}
+
+function closeSidebarMobile() {
+  if (window.innerWidth <= 768) {
+    sidebar.classList.remove('open');
+    if (sidebarOverlay) sidebarOverlay.hidden = true;
+  }
+}
+
+$('#sidebar-toggle').addEventListener('click', toggleSidebar);
+if (sidebarOverlay) {
+  sidebarOverlay.addEventListener('click', closeSidebarMobile);
+}
 
 // ─── View Switching ───────────────────────────────────────────
 $$('.nav-item').forEach(btn => {
@@ -175,6 +194,7 @@ $$('.nav-item').forEach(btn => {
     $$('.view').forEach(v => v.classList.remove('active'));
     $(`#view-${currentView}`).classList.add('active');
     renderCurrentView();
+    closeSidebarMobile();
   });
 });
 
@@ -219,6 +239,7 @@ function renderProjects() {
       $('#current-project-title').textContent = currentProject
         ? store.projects.find(p => p.id === currentProject)?.name || 'Project'
         : 'All Tasks';
+      closeSidebarMobile();
     });
   });
 
