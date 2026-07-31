@@ -18,6 +18,7 @@ TaskForge solves the challenge of team-based task execution by allowing tasks to
   - 📅 **Timeline View:** Chronological schedule map sorted by due dates with overdue highlighting.
 - **Team & Project Management:** Create, edit, recolor, and delete custom teams and projects directly from the sidebar drawer.
 - **Subtasks & Tags:** Progress percentage bars for checklist subtasks and tagged metadata.
+- **Password Security & Access Control:** Passcode protection (`vlsi`) enforced for creating/editing tasks, managing teams, dragging Kanban cards, and importing data. Features a topbar session lock status toggle (🔒/🔓).
 - **Responsive Mobile Experience:** Mobile drawer menu with dark backdrop overlays, touch-optimized bottom sheet modals, and horizontal swipeable Kanban columns.
 - **Data Export / Import:** Export entire workspace state to `.json` for offline backups and instant environment transfers.
 
@@ -112,6 +113,9 @@ D:\AI_OS\dashboard\
 
 4. **Responsive Menu Drawer:**
    The hamburger menu button toggles `.collapsed` on desktop and `.open` with a dark backdrop overlay (`#sidebar-overlay`) on mobile devices.
+
+5. **Password Protection & Access Control:**
+   All mutating operations (Task/Team creation, Task editing, Drag-and-Drop status changes, Subtask updates, and JSON import) pass through `checkPassword()`. Validating the passcode `"vlsi"` grants access and caches authorization state in `sessionStorage`. Users can click the topbar lock button (🔒/🔓) to inspect or lock their active session anytime.
 
 ---
 
