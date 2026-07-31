@@ -1,8 +1,17 @@
 /* ═══════════════════════════════════════════════════════════════
    TaskForge — Universal Task Dashboard
-   Pure JS, localStorage persistence, drag-and-drop Kanban
-   Tasks are assigned to TEAMS (not individuals).
+   Pure JS, Real-Time Supabase Cloud DB + localStorage caching,
+   Drag-and-drop Kanban, Team Assignments, Multi-user Real-Time Sync.
    ═══════════════════════════════════════════════════════════════ */
+
+// ─── Supabase Configuration ───────────────────────────────────
+const SUPABASE_URL = 'https://bdpwcqbsoybxmgjkqdrd.supabase.co';
+const SUPABASE_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJkcHdjcWJzb3lieG1namtxZHJkIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1MTUzNTIsImV4cCI6MjEwMTA5MTM1Mn0.rO9amsCJw2xbBASz2NLzoyB5rlzYy8fmWKD2SXOZ82M';
+
+let supabaseClient = null;
+if (window.supabase) {
+  supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+}
 
 // ─── Data Store ───────────────────────────────────────────────
 const STORAGE_KEY = 'taskforge_data';
@@ -16,26 +25,109 @@ const DEFAULT_DATA = {
   nextTaskNum: 1,
 };
 
-function loadData() {
+function loadLocalData() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      // Migration: old data had 'members' → clear and use teams
-      if (parsed.members && !parsed.teams) {
-        parsed.teams = [];
-        (parsed.tasks || []).forEach(t => { t.teamId = null; delete t.assigneeId; });
-        delete parsed.members;
-      }
-      if (!parsed.teams) parsed.teams = [];
-      return parsed;
-    }
+    if (raw) return JSON.parse(raw);
   } catch (_) {}
   return structuredClone(DEFAULT_DATA);
 }
-function saveData() { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); }
+function saveLocalData() { localStorage.setItem(STORAGE_KEY, JSON.stringify(store)); }
 
-let store = loadData();
+let store = loadLocalData();
+
+// ─── Supabase Cloud Sync Operations ───────────────────────────
+async function fetchCloudData() {
+  if (!supabaseClient) return;
+  try {
+    const [projRes, teamRes, taskRes] = await Promise.all([
+      supabaseClient.from('projects').select('*'),
+      supabaseClient.from('teams').select('*'),
+      supabaseClient.from('tasks').select('*')
+    ]);
+
+    if (!projRes.error && projRes.data) {
+      if (projRes.data.length > 0) store.projects = projRes.data.map(p => ({ id: p.id, name: p.name, color: p.color }));
+    }
+    if (!teamRes.error && teamRes.data) {
+      if (teamRes.data.length > 0) store.teams = teamRes.data.map(t => ({ id: t.id, name: t.name, color: t.color }));
+    }
+    if (!taskRes.error && taskRes.data) {
+      store.tasks = taskRes.data.map(t => ({
+        id: t.id,
+        num: t.num,
+        title: t.title,
+        description: t.description,
+        status: t.status,
+        priority: t.priority,
+        teamId: t.team_id,
+        projectId: t.project_id,
+        dueDate: t.due_date,
+        tags: t.tags || [],
+        subtasks: t.subtasks || [],
+        createdAt: t.created_at,
+        updatedAt: t.updated_at
+      }));
+      const maxNum = store.tasks.reduce((m, t) => Math.max(m, t.num || 0), 0);
+      store.nextTaskNum = Math.max(store.nextTaskNum, maxNum + 1);
+    }
+
+    saveLocalData();
+    renderAll();
+  } catch (err) {
+    console.warn('Supabase fetch error, fallback to local storage:', err);
+  }
+}
+
+async function syncTaskToCloud(task) {
+  if (!supabaseClient) return;
+  const payload = {
+    id: task.id,
+    num: task.num,
+    title: task.title,
+    description: task.description,
+    status: task.status,
+    priority: task.priority,
+    team_id: task.teamId,
+    project_id: task.projectId,
+    due_date: task.dueDate,
+    tags: task.tags || [],
+    subtasks: task.subtasks || [],
+    updated_at: new Date().toISOString()
+  };
+  await supabaseClient.from('tasks').upsert(payload);
+}
+
+async function deleteTaskFromCloud(id) {
+  if (!supabaseClient) return;
+  await supabaseClient.from('tasks').delete().eq('id', id);
+}
+
+async function syncProjectToCloud(proj) {
+  if (!supabaseClient) return;
+  await supabaseClient.from('projects').upsert({ id: proj.id, name: proj.name, color: proj.color });
+}
+
+async function syncTeamToCloud(team) {
+  if (!supabaseClient) return;
+  await supabaseClient.from('teams').upsert({ id: team.id, name: team.name, color: team.color });
+}
+
+async function deleteTeamFromCloud(id) {
+  if (!supabaseClient) return;
+  await supabaseClient.from('teams').delete().eq('id', id);
+}
+
+// Enable Real-time Multi-User Subscriptions
+function setupRealtimeSubscriptions() {
+  if (!supabaseClient) return;
+  supabaseClient
+    .channel('public:tasks')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'tasks' }, () => fetchCloudData())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'projects' }, () => fetchCloudData())
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'teams' }, () => fetchCloudData())
+    .subscribe();
+}
 
 // ─── Helpers ──────────────────────────────────────────────────
 const $ = (s, p = document) => p.querySelector(s);
@@ -64,7 +156,7 @@ let currentProject = '';
 let editingTaskId = null;
 let editingSubtasks = [];
 let draggedCard = null;
-let editingTeamId = null; // null = creating, string = editing
+let editingTeamId = null;
 
 // ─── DOM Refs ─────────────────────────────────────────────────
 const sidebar = $('#sidebar');
@@ -137,7 +229,7 @@ function renderProjects() {
   sel.value = val;
 }
 
-// ─── Render: Sidebar Teams (with edit/delete) ─────────────────
+// ─── Render: Sidebar Teams ────────────────────────────────────
 function renderTeams() {
   const list = $('#team-list');
 
@@ -159,7 +251,6 @@ function renderTeams() {
       </div>
     `).join('');
 
-    // Edit buttons
     $$('.team-action-btn.edit', list).forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -167,7 +258,6 @@ function renderTeams() {
       });
     });
 
-    // Delete buttons
     $$('.team-action-btn.delete', list).forEach(btn => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
@@ -176,7 +266,6 @@ function renderTeams() {
     });
   }
 
-  // Update team selects (task modal + filter)
   const selects = [$('#task-team'), $('#filter-team')];
   selects.forEach(sel => {
     const val = sel.value;
@@ -197,7 +286,8 @@ function deleteTeam(teamId) {
   if (!confirm(msg)) return;
   store.teams = store.teams.filter(t => t.id !== teamId);
   store.tasks.forEach(t => { if (t.teamId === teamId) t.teamId = null; });
-  saveData();
+  saveLocalData();
+  deleteTeamFromCloud(teamId);
   renderTeams();
   renderCurrentView();
   toast(`${team.name} deleted`, 'error');
@@ -277,7 +367,8 @@ function onDrop(e) {
   const task = store.tasks.find(t => t.id === taskId);
   if (task && task.status !== newStatus) {
     task.status = newStatus;
-    saveData();
+    saveLocalData();
+    syncTaskToCloud(task);
     renderBoard();
     toast(`Moved to ${newStatus.replace('-', ' ')}`, 'info');
   }
@@ -399,21 +490,25 @@ $('#task-form').addEventListener('submit', (e) => {
     subtasks: editingSubtasks,
   };
 
+  let targetTask = null;
   if (editingTaskId) {
-    const task = store.tasks.find(t => t.id === editingTaskId);
-    Object.assign(task, data, { updatedAt: new Date().toISOString() });
+    targetTask = store.tasks.find(t => t.id === editingTaskId);
+    Object.assign(targetTask, data, { updatedAt: new Date().toISOString() });
     toast('Task updated');
   } else {
-    store.tasks.push({
+    targetTask = {
       id: uid(),
       num: store.nextTaskNum++,
       ...data,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
-    });
+    };
+    store.tasks.push(targetTask);
     toast('Task created');
   }
-  saveData();
+
+  saveLocalData();
+  syncTaskToCloud(targetTask);
   closeTaskModal();
   renderCurrentView();
 });
@@ -421,8 +516,10 @@ $('#task-form').addEventListener('submit', (e) => {
 $('#delete-task-btn').addEventListener('click', () => {
   if (!editingTaskId) return;
   if (!confirm('Delete this task?')) return;
-  store.tasks = store.tasks.filter(t => t.id !== editingTaskId);
-  saveData();
+  const idToDelete = editingTaskId;
+  store.tasks = store.tasks.filter(t => t.id !== idToDelete);
+  saveLocalData();
+  deleteTaskFromCloud(idToDelete);
   closeTaskModal();
   renderCurrentView();
   toast('Task deleted', 'error');
@@ -480,8 +577,10 @@ $('#project-form').addEventListener('submit', (e) => {
   e.preventDefault();
   const name = $('#project-name').value.trim();
   if (!name) return;
-  store.projects.push({ id: uid(), name, color: selectedProjectColor });
-  saveData();
+  const newProj = { id: uid(), name, color: selectedProjectColor };
+  store.projects.push(newProj);
+  saveLocalData();
+  syncProjectToCloud(newProj);
   renderProjects();
   $('#project-modal').hidden = true;
   toast('Project created');
@@ -530,23 +629,24 @@ $('#team-form').addEventListener('submit', (e) => {
   const name = $('#team-name').value.trim();
   if (!name) return;
 
+  let targetTeam = null;
   if (editingTeamId) {
-    // Update existing team
-    const team = store.teams.find(t => t.id === editingTeamId);
-    if (team) {
-      team.name = name;
-      team.color = selectedTeamColor;
+    targetTeam = store.teams.find(t => t.id === editingTeamId);
+    if (targetTeam) {
+      targetTeam.name = name;
+      targetTeam.color = selectedTeamColor;
       toast(`${name} updated`);
     }
   } else {
-    // Create new team
-    store.teams.push({ id: uid(), name, color: selectedTeamColor });
+    targetTeam = { id: uid(), name, color: selectedTeamColor };
+    store.teams.push(targetTeam);
     toast(`${name} added`);
   }
 
-  saveData();
+  saveLocalData();
+  if (targetTeam) syncTeamToCloud(targetTeam);
   renderTeams();
-  renderCurrentView(); // refresh cards/list in case team name/color changed
+  renderCurrentView();
   $('#team-modal').hidden = true;
 });
 
@@ -577,9 +677,13 @@ $('#import-file').addEventListener('change', (e) => {
       const data = JSON.parse(reader.result);
       if (data.tasks && data.projects && data.teams) {
         store = data;
-        saveData();
+        saveLocalData();
         renderAll();
-        toast('Data imported');
+        // Sync all imported data to cloud
+        store.projects.forEach(p => syncProjectToCloud(p));
+        store.teams.forEach(t => syncTeamToCloud(t));
+        store.tasks.forEach(t => syncTaskToCloud(t));
+        toast('Data imported & synced to cloud');
       } else { toast('Invalid file format', 'error'); }
     } catch { toast('Failed to parse file', 'error'); }
   };
@@ -600,7 +704,7 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
-// ─── Initial Render ──────────────────────────────────────────
+// ─── Initial Render & Real-time Setup ────────────────────────
 function renderAll() {
   renderProjects();
   renderTeams();
@@ -608,3 +712,5 @@ function renderAll() {
 }
 
 renderAll();
+fetchCloudData();
+setupRealtimeSubscriptions();
