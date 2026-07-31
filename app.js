@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   TaskForge — Universal Task Dashboard
+   TapeoutX — Task Workspace & Team Dashboard
    Pure JS, Real-Time Supabase Cloud DB + localStorage caching,
    Drag-and-drop Kanban, Multi-Team Assignments, Multi-user Sync.
    ═══════════════════════════════════════════════════════════════ */
@@ -19,9 +19,15 @@ const STORAGE_KEY = 'taskforge_data';
 const DEFAULT_DATA = {
   tasks: [],
   projects: [
-    { id: 'proj_1', name: 'TapeoutX', color: '#6C5CE7' },
+    { id: 'proj_tapeoutx', name: 'TapeoutX', color: '#6C5CE7' },
   ],
-  teams: [],
+  teams: [
+    { id: 'team_vision_ops', name: 'Vision, Leadership & Operations', color: '#6C5CE7' },
+    { id: 'team_research_editorial', name: 'Research & Editorial', color: '#00B894' },
+    { id: 'team_content_production', name: 'Content Production', color: '#FF7675' },
+    { id: 'team_social_outreach', name: 'Social Media & Outreach', color: '#FDCB6E' },
+    { id: 'team_community', name: 'Community', color: '#A29BFE' },
+  ],
   nextTaskNum: 1,
 };
 
@@ -166,13 +172,74 @@ function toast(msg, type = 'success') {
   setTimeout(() => { el.style.opacity = '0'; setTimeout(() => el.remove(), 300); }, 2600);
 }
 
-// ─── State ────────────────────────────────────────────────────
-let currentView = 'board';
+// ─── State & Password Protection ────────────────────────────────
+let currentView = 'cards';
 let currentProject = '';
 let editingTaskId = null;
 let editingSubtasks = [];
 let draggedCard = null;
 let editingTeamId = null;
+let isUnlocked = false;
+
+function checkPassword() {
+  if (isUnlocked || sessionStorage.getItem('taskforge_auth') === 'true') {
+    isUnlocked = true;
+    updateLockStatusUI();
+    return true;
+  }
+  const pwd = prompt('Enter password to add or edit tasks/teams:');
+  if (pwd !== null && pwd.trim().toLowerCase() === 'vlsi') {
+    isUnlocked = true;
+    sessionStorage.setItem('taskforge_auth', 'true');
+    toast('Access granted', 'success');
+    updateLockStatusUI();
+    return true;
+  } else if (pwd !== null) {
+    toast('Incorrect password!', 'error');
+  }
+  return false;
+}
+
+function updateLockStatusUI() {
+  const lockBtn = $('#auth-lock-btn');
+  if (!lockBtn) return;
+  const isAuth = isUnlocked || sessionStorage.getItem('taskforge_auth') === 'true';
+  if (isAuth) {
+    lockBtn.className = 'lock-status-btn unlocked';
+    lockBtn.title = 'Session Unlocked (Click to Lock)';
+    lockBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg><span>Unlocked</span>`;
+  } else {
+    lockBtn.className = 'lock-status-btn locked';
+    lockBtn.title = 'Protected with password (Click to Unlock)';
+    lockBtn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg><span>Locked</span>`;
+  }
+}
+
+function toggleLock() {
+  const isAuth = isUnlocked || sessionStorage.getItem('taskforge_auth') === 'true';
+  if (isAuth) {
+    isUnlocked = false;
+    sessionStorage.removeItem('taskforge_auth');
+    updateLockStatusUI();
+    toast('Session locked', 'info');
+  } else {
+    checkPassword();
+  }
+}
+
+const PRIORITY_MAP = { critical: 4, urgent: 4, high: 3, medium: 2, low: 1 };
+
+function sortTasksByPriority(tasks) {
+  return [...tasks].sort((a, b) => {
+    const pA = PRIORITY_MAP[(a.priority || '').toLowerCase()] || 0;
+    const pB = PRIORITY_MAP[(b.priority || '').toLowerCase()] || 0;
+    if (pB !== pA) return pB - pA;
+    if (a.dueDate && b.dueDate) return new Date(a.dueDate) - new Date(b.dueDate);
+    if (a.dueDate) return -1;
+    if (b.dueDate) return 1;
+    return (a.num || 0) - (b.num || 0);
+  });
+}
 
 // ─── DOM Refs & Sidebar Toggle ─────────────────────────────────
 const sidebar = $('#sidebar');
@@ -228,7 +295,7 @@ function getFilteredTasks() {
     (t.description || '').toLowerCase().includes(q) ||
     (t.tags || []).some(tag => tag.toLowerCase().includes(q))
   );
-  return tasks;
+  return sortTasksByPriority(tasks);
 }
 
 $('#search-input').addEventListener('input', () => renderCurrentView());
@@ -336,6 +403,7 @@ function getSelectedTeamIds() {
 }
 
 function deleteTeam(teamId) {
+  if (!checkPassword()) return;
   const team = store.teams.find(t => t.id === teamId);
   if (!team) return;
   const tasksUsing = store.tasks.filter(t => (t.teamIds || []).includes(teamId)).length;
@@ -354,6 +422,38 @@ function deleteTeam(teamId) {
   toast(`${team.name} deleted`, 'error');
 }
 
+// ─── Card Helper & Event Binding ────────────────────────────────
+function bindCardEvents(container) {
+  $$('.task-card', container).forEach(card => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.card-edit-btn')) return;
+      openTaskDetails(card.dataset.id);
+    });
+    const editBtn = card.querySelector('.card-edit-btn');
+    if (editBtn) {
+      editBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openEditTask(editBtn.dataset.id);
+      });
+    }
+  });
+}
+
+// ─── Render: Cards View (Priority Grid) ─────────────────────────
+function renderCards() {
+  const tasks = getFilteredTasks();
+  const feed = $('#cards-feed');
+  if (!tasks.length) {
+    feed.innerHTML = '<div class="cards-feed-empty">No tasks found</div>';
+    updateBadge(0);
+    return;
+  }
+
+  feed.innerHTML = tasks.map(t => cardHtml(t, true)).join('');
+  bindCardEvents(feed);
+  updateBadge(tasks.length);
+}
+
 // ─── Render: Board View ──────────────────────────────────────
 function renderBoard() {
   const statuses = ['backlog', 'todo', 'in-progress', 'review', 'done'];
@@ -364,14 +464,15 @@ function renderBoard() {
     const statusTasks = tasks.filter(t => t.status === status);
     $(`[data-count="${status}"]`).textContent = statusTasks.length;
 
-    col.innerHTML = statusTasks.map(t => cardHtml(t)).join('');
+    col.innerHTML = statusTasks.map(t => cardHtml(t, false)).join('');
 
     $$('.task-card', col).forEach(card => {
       card.draggable = true;
       card.addEventListener('dragstart', onDragStart);
       card.addEventListener('dragend', onDragEnd);
-      card.addEventListener('click', () => openEditTask(card.dataset.id));
     });
+
+    bindCardEvents(col);
 
     col.addEventListener('dragover', onDragOver);
     col.addEventListener('dragleave', onDragLeave);
@@ -381,23 +482,33 @@ function renderBoard() {
   updateBadge(tasks.length);
 }
 
-function cardHtml(t) {
+function cardHtml(t, isCardsView = false) {
   const teamIds = t.teamIds || [];
   const assignedTeams = teamIds.map(id => store.teams.find(tm => tm.id === id)).filter(Boolean);
   const totalSub = (t.subtasks || []).length;
   const doneSub = (t.subtasks || []).filter(s => s.done).length;
   const pct = totalSub ? Math.round((doneSub / totalSub) * 100) : 0;
+  const proj = store.projects.find(p => p.id === t.projectId);
 
-  return `<div class="task-card" data-id="${t.id}" draggable="true">
+  return `<div class="task-card priority-${t.priority}" data-id="${t.id}" ${isCardsView ? '' : 'draggable="true"'}>
+    <div class="card-top-bar">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span class="priority-badge ${t.priority}">${t.priority}</span>
+        <span class="status-pill ${t.status}">${t.status.replace('-', ' ')}</span>
+      </div>
+      <button class="card-edit-btn" data-id="${t.id}" title="Edit Task">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+      </button>
+    </div>
     <div class="task-card-title">${escHtml(t.title)}</div>
     ${t.description ? `<div class="task-card-desc">${escHtml(t.description)}</div>` : ''}
     <div class="task-card-meta">
-      <span class="priority-badge ${t.priority}">${t.priority}</span>
       ${t.dueDate ? `<span class="task-card-due ${isOverdue(t.dueDate) && t.status !== 'done' ? 'overdue' : ''}">📅 ${fmtDate(t.dueDate)}</span>` : ''}
+      ${proj ? `<span class="task-card-project" style="color:${proj.color};font-size:.75rem;font-weight:600">📁 ${escHtml(proj.name)}</span>` : ''}
       ${assignedTeams.length ? `<div class="task-card-teams">${assignedTeams.map(tm => `<span class="task-card-team" style="background:${tm.color}">${escHtml(tm.name)}</span>`).join('')}</div>` : ''}
     </div>
     ${(t.tags || []).length ? `<div class="task-card-tags">${t.tags.map(tag => `<span class="tag">${escHtml(tag)}</span>`).join('')}</div>` : ''}
-    ${totalSub ? `<div class="subtask-progress"><div class="subtask-progress-fill" style="width:${pct}%"></div></div>` : ''}
+    ${totalSub ? `<div class="subtask-progress" title="${doneSub}/${totalSub} completed"><div class="subtask-progress-fill" style="width:${pct}%"></div></div>` : ''}
   </div>`;
 }
 
@@ -428,6 +539,7 @@ function onDrop(e) {
   const newStatus = col.dataset.status;
   const task = store.tasks.find(t => t.id === taskId);
   if (task && task.status !== newStatus) {
+    if (!checkPassword()) return;
     task.status = newStatus;
     saveLocalData();
     syncTaskToCloud(task);
@@ -455,7 +567,7 @@ function renderList() {
     </tr>`;
   }).join('');
   $$('tr[data-id]', tbody).forEach(row => {
-    row.addEventListener('click', () => openEditTask(row.dataset.id));
+    row.addEventListener('click', () => openTaskDetails(row.dataset.id));
   });
   updateBadge(tasks.length);
 }
@@ -486,21 +598,116 @@ function renderTimeline() {
     </div>`;
   }).join('');
   $$('.timeline-item', container).forEach(el => {
-    el.addEventListener('click', () => openEditTask(el.dataset.id));
+    el.addEventListener('click', () => openTaskDetails(el.dataset.id));
   });
   updateBadge(getFilteredTasks().length);
 }
 
 function renderCurrentView() {
-  if (currentView === 'board') renderBoard();
+  if (currentView === 'cards') renderCards();
+  else if (currentView === 'board') renderBoard();
   else if (currentView === 'list') renderList();
   else if (currentView === 'timeline') renderTimeline();
 }
 
 function updateBadge(n) { $('#task-count-badge').textContent = n; }
 
+// ─── Task Details Modal ─────────────────────────────────────────
+let activeDetailsTaskId = null;
+
+function openTaskDetails(id) {
+  const task = store.tasks.find(t => t.id === id);
+  if (!task) return;
+  activeDetailsTaskId = id;
+
+  $('#details-num').textContent = `TF-${String(task.num).padStart(3, '0')}`;
+  $('#details-title').textContent = task.title;
+
+  const prioEl = $('#details-priority');
+  prioEl.className = `priority-badge ${task.priority}`;
+  prioEl.textContent = task.priority;
+
+  const statusEl = $('#details-status');
+  statusEl.className = `status-pill ${task.status}`;
+  statusEl.textContent = task.status.replace('-', ' ');
+
+  const proj = store.projects.find(p => p.id === task.projectId);
+  $('#details-project-wrapper').innerHTML = proj
+    ? `<span style="color:${proj.color};font-weight:600;font-size:.85rem">📁 ${escHtml(proj.name)}</span>`
+    : '';
+
+  const descSec = $('#details-desc-section');
+  if (task.description) {
+    descSec.hidden = false;
+    $('#details-desc').textContent = task.description;
+  } else {
+    descSec.hidden = true;
+  }
+
+  $('#details-due').textContent = task.dueDate ? fmtDate(task.dueDate) : 'No due date';
+
+  const teamIds = task.teamIds || [];
+  const assignedTeams = teamIds.map(tId => store.teams.find(tm => tm.id === tId)).filter(Boolean);
+  $('#details-teams').innerHTML = assignedTeams.length
+    ? assignedTeams.map(tm => `<span class="team-badge" style="background:${tm.color}">${escHtml(tm.name)}</span>`).join(' ')
+    : '<span style="color:var(--text-muted)">Unassigned</span>';
+
+  $('#details-tags').innerHTML = (task.tags || []).length
+    ? task.tags.map(tag => `<span class="tag">${escHtml(tag)}</span>`).join(' ')
+    : '<span style="color:var(--text-muted)">No tags</span>';
+
+  // Subtasks
+  const subSec = $('#details-subtasks-section');
+  const subtasks = task.subtasks || [];
+  if (subtasks.length) {
+    subSec.hidden = false;
+    const doneCount = subtasks.filter(s => s.done).length;
+    $('#details-subtasks-count').textContent = `${doneCount}/${subtasks.length} Done`;
+
+    const listEl = $('#details-subtasks-list');
+    listEl.innerHTML = subtasks.map((s, idx) => `
+      <div class="subtask-item">
+        <input type="checkbox" ${s.done ? 'checked' : ''} data-idx="${idx}" />
+        <span class="${s.done ? 'done' : ''}">${escHtml(s.text)}</span>
+      </div>
+    `).join('');
+
+    $$('input[type="checkbox"]', listEl).forEach(cb => {
+      cb.addEventListener('change', () => {
+        if (!checkPassword()) {
+          cb.checked = !cb.checked;
+          return;
+        }
+        const idx = +cb.dataset.idx;
+        task.subtasks[idx].done = cb.checked;
+        saveLocalData();
+        syncTaskToCloud(task);
+        openTaskDetails(id);
+        renderCurrentView();
+      });
+    });
+  } else {
+    subSec.hidden = true;
+  }
+
+  $('#details-modal').hidden = false;
+}
+
+function closeDetailsModal() {
+  $('#details-modal').hidden = true;
+}
+
+$('#details-close').addEventListener('click', closeDetailsModal);
+$('#details-cancel-btn').addEventListener('click', closeDetailsModal);
+$('#details-modal').addEventListener('click', (e) => { if (e.target === $('#details-modal')) closeDetailsModal(); });
+$('#details-edit-btn').addEventListener('click', () => {
+  closeDetailsModal();
+  if (activeDetailsTaskId) openEditTask(activeDetailsTaskId);
+});
+
 // ─── Task Modal ───────────────────────────────────────────────
 function openNewTask() {
+  if (!checkPassword()) return;
   editingTaskId = null;
   editingSubtasks = [];
   $('#modal-title').textContent = 'New Task';
@@ -515,6 +722,7 @@ function openNewTask() {
 }
 
 function openEditTask(id) {
+  if (!checkPassword()) return;
   const task = store.tasks.find(t => t.id === id);
   if (!task) return;
   editingTaskId = id;
@@ -623,6 +831,7 @@ $('#subtask-input').addEventListener('keydown', (e) => {
 // ─── Project Modal ────────────────────────────────────────────
 let selectedProjectColor = '#6C5CE7';
 $('#add-project-btn').addEventListener('click', () => {
+  if (!checkPassword()) return;
   closeSidebarMobile();
   $('#project-name').value = '';
   selectedProjectColor = '#6C5CE7';
@@ -656,6 +865,7 @@ $('#project-form').addEventListener('submit', (e) => {
 let selectedTeamColor = '#6C5CE7';
 
 function openCreateTeam() {
+  if (!checkPassword()) return;
   closeSidebarMobile();
   editingTeamId = null;
   $('#team-name').value = '';
@@ -668,6 +878,7 @@ function openCreateTeam() {
 }
 
 function openEditTeam(teamId) {
+  if (!checkPassword()) return;
   closeSidebarMobile();
   const team = store.teams.find(t => t.id === teamId);
   if (!team) return;
@@ -739,6 +950,10 @@ $('#import-btn').addEventListener('click', () => $('#import-file').click());
 $('#import-file').addEventListener('change', (e) => {
   const file = e.target.files[0];
   if (!file) return;
+  if (!checkPassword()) {
+    e.target.value = '';
+    return;
+  }
   const reader = new FileReader();
   reader.onload = () => {
     try {
@@ -762,6 +977,7 @@ $('#import-file').addEventListener('change', (e) => {
 // ─── Keyboard Shortcuts ──────────────────────────────────────
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    closeDetailsModal();
     closeTaskModal();
     $('#project-modal').hidden = true;
     $('#team-modal').hidden = true;
@@ -777,7 +993,10 @@ function renderAll() {
   renderProjects();
   renderTeams();
   renderCurrentView();
+  updateLockStatusUI();
 }
+
+$('#auth-lock-btn')?.addEventListener('click', toggleLock);
 
 renderAll();
 fetchCloudData();
